@@ -1,0 +1,62 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# SQLite DB file
+*.db
+*.sqlite3
+
+# Pydantic cache or mypy
+*.mypy_cache/
+*.pytest_cache/
+.pytest_cache/
+.dmypy.json
+.pyre/
+
+# FastAPI logs or temp files
+*.log
+*.tmp
+
+# VSCode project settings
+.vscode/
+
+# Docker
+*.env
+.env.*
+docker-compose.override.yml
+*.pid
+*.seed
+*.bak
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.dll
+*.dylib
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Pipenv / poetry / venv
+pip-log.txt
+Pipfile.lock
+poetry.lock
+venv/
+.env/
+
+# coverage / testing
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.cache
+nosetests.xml
+test-results.xml
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Ignore compiled migrations if any
+migrations/__pycache__/
