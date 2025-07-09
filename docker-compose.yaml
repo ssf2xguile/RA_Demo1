@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  api:
+    build: ./cloud_api
+    container_name: fastapi_app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./cloud_api:/app
+    ports:
+      - "8000:8000"
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+    restart: always
+
+  car_app:
+    build: ./car_app
+    container_name: car_client
+    command: python send_data.py
+    depends_on:
+      - nginx
+    restart: on-failure
