@@ -8,7 +8,21 @@ VEHICLE_SIMULATOR_URL = "http://vehicle:8001/command"
 # アプリケーションサーバーのメモリ上にセッション情報を保持する辞書
 SESSION_STORE = {}
 
+<<<<<<< HEAD
 app = FastAPI()
+=======
+def heavy_cpu_task():
+    """
+    CPUに高い負荷をかける同期関数。
+    これが実行されるスレッドをブロックします。
+    """
+    print("Starting heavy CPU task...")
+    result = 0
+    # 計算量を増やしてCPUを長時間占有させる
+    for i in range(10_000_000):
+        result += (i * i) % 12345
+    print(f"Finished heavy CPU task with result: {result}")
+>>>>>>> e6ea14b (CPU処理を重くする方針でシナリオを再現する)
 
 @app.post("/api/v1/vehicle/climate/start")
 async def start_climate(data: dict, request: Request):
