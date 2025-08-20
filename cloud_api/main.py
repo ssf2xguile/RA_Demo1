@@ -1,33 +1,30 @@
 import asyncio
 import requests
+import uuid
 from fastapi import FastAPI, Request
 
 VEHICLE_SIMULATOR_URL = "http://vehicle:8001/command"
 
-app = FastAPI()
+# アプリケーションサーバーのメモリ上にセッション情報を保持する辞書
+SESSION_STORE = {}
 
-def heavy_cpu_task():
-    """
-    CPUに高い負荷をかける同期関数。
-    これが実行されるスレッドをブロックします。
-    """
-    print("Starting heavy CPU task...")
-    result = 0
-    # 計算量を増やしてCPUを長時間占有させる
-    for i in range(30_000_000):
-        result += (i * i) % 12345
-    print(f"Finished heavy CPU task with result: {result}")
+app = FastAPI()
 
 @app.post("/api/v1/vehicle/climate/start")
 async def start_climate(data: dict, request: Request):
     request_id = request.headers.get("X-Request-ID", "N/A")
-    print(f"AppServer: [Req ID: {request_id}] Received request.")
+    
+    # 1. セッション情報をメモリに蓄積 (メモリリークのシミュレーション)
+    session_id = str(uuid.uuid4())
+    # 1セッションあたり約1MBのデータを生成
+    session_data = ' ' * (1024 * 1024) 
+    SESSION_STORE[session_id] = session_data
+    
+    memory_usage_mb = len(SESSION_STORE)
+    print(f"AppServer: [Req ID: {request_id}] Received. Session stored. Total sessions: {len(SESSION_STORE)}, Approx memory: {memory_usage_mb} MB")
 
     try:
-        # 1. CPU負荷の高い同期処理を、FastAPIのワーカースレッドで実行する
-        #    これにより、メインのイベントループをブロックせず、
-        #    複数のリクエストが並行してCPUリソースを奪い合う状況を作り出す。
-        await asyncio.to_thread(heavy_cpu_task)
+        await asyncio.sleep(0.5)
         
     except asyncio.CancelledError:
         print(f"AppServer: [Req ID: {request_id}] Detected client disconnection. Stopping process.")
@@ -41,5 +38,4 @@ async def start_climate(data: dict, request: Request):
     except requests.exceptions.RequestException as e:
         print(f"AppServer: [Req ID: {request_id}] Failed to send command to vehicle: {e}")
 
-    # このレスポンスはタイムアウトの場合クライアントに届かない
     return {"message": "Command processed", "request_id": request_id}

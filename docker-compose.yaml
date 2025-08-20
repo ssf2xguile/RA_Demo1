@@ -7,7 +7,7 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./cloud_api:/app
-    mem_limit: 1g
+    mem_limit: 1gb
     restart: always
     depends_on:
       - vehicle
