@@ -1,6 +1,7 @@
 version: '3.9'
 
 services:
+  # ---- App Profile ----
   api:
     build: ./cloud_api
     container_name: fastapi_app
@@ -8,9 +9,11 @@ services:
     volumes:
       - ./cloud_api:/app
     mem_limit: 1gb
-    restart: always
+    restart: on-failure
     depends_on:
       - vehicle
+    profiles:
+      - app
 
   nginx:
     build: ./nginx
@@ -19,7 +22,9 @@ services:
       - "8080:80"
     depends_on:
       - api
-    restart: always
+    restart: on-failure
+    profiles:
+      - app
 
   car_app:
     build: ./car_app
@@ -28,9 +33,31 @@ services:
     depends_on:
       - nginx
     restart: on-failure
+    profiles:
+      - app
 
   vehicle:
     build: ./vehicle_simulator
     container_name: vehicle_simulator
     command: uvicorn simulator:app --host 0.0.0.0 --port 8001
-    restart: always
+    restart: on-failure
+    profiles:
+      - app
+
+  # ---- Agent Profile ----
+  ai_agent:
+    build: ./ai_agent
+    container_name: ai_agent
+    command: python main.py
+    volumes:
+      - ./logs:/app/logs:ro
+      - ./car_app:/app/source/car_app:ro
+      - ./cloud_api:/app/source/cloud_api:ro
+      - ./nginx:/app/source/nginx:ro
+      - ./vehicle_simulator:/app/source/vehicle_simulator:ro
+    environment:
+      # 実行時にOpenAIのAPIキーを設定してください
+      - OPENAI_API_KEY=
+    profiles:
+      - agent
+

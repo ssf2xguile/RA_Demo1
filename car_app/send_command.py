@@ -2,12 +2,17 @@ import requests
 import uuid
 import threading
 import time
+import logging 
+import sys 
 
-API_URL = "http://nginx_proxy/api/v1/vehicle/climate/start"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+API_URL = "http://nginx:80/api/v1/vehicle/climate/start" # nginx_proxyからnginxに変更
 
 def send_request(request_id):
     """リクエストを1件送信する"""
-    print(f"Client: [Req ID: {request_id}] Sending request...")
+    #logging.info(f"Client: [Req ID: {request_id}] Sending request...")
     try:
         response = requests.post(
             API_URL, 
@@ -16,11 +21,13 @@ def send_request(request_id):
             timeout=65
         )
         response.raise_for_status()
-        print(f"Client: [Req ID: {request_id}] Success!")
+        #logging.info(f"Client: [Req ID: {request_id}] Success!")
     except requests.exceptions.Timeout:
-        print(f"Client: [Req ID: {request_id}] ERROR! Operation timed out.")
+        # エラーなのでlogging.errorに変更
+        logging.error(f"Client: [Req ID: {request_id}] ERROR! Operation timed out.")
     except requests.exceptions.RequestException as e:
-        print(f"Client: [Req ID: {request_id}] ERROR! An unexpected error occurred: {e}")
+        # エラーなのでlogging.errorに変更
+        logging.error(f"Client: [Req ID: {request_id}] ERROR! An unexpected error occurred: {e}")
 
 def run_burst(num_requests):
     """指定された数のリクエストを並行して送信する"""
@@ -37,15 +44,15 @@ def run_burst(num_requests):
 if __name__ == "__main__":
     start_time = time.time()
     # 最初の20秒間は、5秒ごとに10件の同時リクエストを送信（正常な負荷）
-    print("\n" + "="*50)
-    print("="*50 + "\n")
+    logging.info("\n" + "="*50)
+    logging.info("="*50 + "\n")
     while time.time() - start_time < 20:
         run_burst(10)
         time.sleep(5)
 
     # 20秒経過後、5秒ごとに200件の同時リクエストを送信（過負荷）
-    print("\n" + "="*50)
-    print("="*50 + "\n")
+    logging.info("\n" + "="*50)
+    logging.info("="*50 + "\n")
     while True:
         run_burst(200)
         time.sleep(5)
