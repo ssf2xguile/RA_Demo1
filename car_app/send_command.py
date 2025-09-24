@@ -43,16 +43,16 @@ def run_burst(num_requests):
 
 if __name__ == "__main__":
     start_time = time.time()
-    # 最初の20秒間は、5秒ごとに10件の同時リクエストを送信（正常な負荷）
+    # 最初の20秒間は、5秒ごとに20件の同時リクエストを送信（正常な負荷）
     logging.info("\n" + "="*50)
     logging.info("="*50 + "\n")
     while time.time() - start_time < 20:
-        run_burst(10)
+        run_burst(20)
         time.sleep(5)
 
-    # 20秒経過後、5秒ごとに200件の同時リクエストを送信（過負荷）
+    # 20秒経過後、5秒ごとに600件の同時リクエストを送信（過負荷）
     logging.info("\n" + "="*50)
     logging.info("="*50 + "\n")
     while True:
-        run_burst(200)
+        run_burst(600)
         time.sleep(5)
