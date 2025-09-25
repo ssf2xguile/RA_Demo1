@@ -12,13 +12,15 @@ REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウ�
 
 PER_SESSION_BYTES = int(os.getenv("PER_SESSION_BYTES", str(10 * 1024 * 1024)))  # 10MB/セッション
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))    # 同時保持上限（≒上限メモリ）
-SESSION_TTL = int(os.getenv("SESSION_TTL", "5"))     # アイドルTTLで解放
+SESSION_TTL = int(os.getenv("SESSION_TTL", "5"))       # アイドルTTLで解放
 APP_QUEUE_TIMEOUT_S = int(os.getenv("APP_QUEUE_TIMEOUT_S", "60"))  # メモリ確保待ちの上限
 
 LOG_PATH = os.getenv("SYNC_LOG_PATH", "/data/proxy.log")
-LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "514"))  # 514KB/req を同期書き込み
+LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "514"))   # 514KB/req を同期書き込み
 
 METRICS_WINDOW_S = int(os.getenv("METRICS_WINDOW_S", "5"))  # 直近窓
+
+STICKY_ON_TIMEOUT_S = int(os.getenv("STICKY_ON_TIMEOUT_S", "600"))
 
 # === App / Client ===
 app = FastAPI()
@@ -33,7 +35,7 @@ _timeouts: Deque[Tuple[float, int]] = deque()
 
 def _inc(k, d=1):
     with _met_lock: _metrics[k] += d
-def _snap(): 
+def _snap():
     with _met_lock: return dict(_metrics)
 def _rec_arrival():
     now=time.time(); _arrivals.append((now,1))
@@ -66,6 +68,14 @@ class _Entry:
         self.last_used=time.time()
     def touch(self): self.last_used=time.time()
 
+_timedout_sids: Dict[str, float] = {}
+_timedout_lock = threading.Lock()
+
+def _mark_sid_timed_out(sid: str):
+    if STICKY_ON_TIMEOUT_S > 0:
+        with _timedout_lock:
+            _timedout_sids[sid] = time.time()
+
 class SessionManager:
     def __init__(self):
         self._lock=asyncio.Lock()
@@ -88,9 +98,28 @@ class SessionManager:
     async def gc(self):
         now=time.time()
         async with self._lock:
-            dead=[k for k,e in self._tbl.items() if now-e.last_used>SESSION_TTL]
-            for k in dead: del self._tbl[k]
-            if dead: self._cv.notify_all()
+            dead=[]
+            for k, e in list(self._tbl.items()):
+                # sticky期間中ならGC対象から外す
+                if STICKY_ON_TIMEOUT_S > 0:
+                    with _timedout_lock:
+                        ts = _timedout_sids.get(k)
+                    if ts and (now - ts) < STICKY_ON_TIMEOUT_S:
+                        continue
+
+                    # sticky期間が過ぎていたら記録を消して通常のTTL判定へ
+                    if ts and (now - ts) >= STICKY_ON_TIMEOUT_S:
+                        with _timedout_lock:
+                            _timedout_sids.pop(k, None)
+
+                # 通常のTTL判定
+                if now - e.last_used > SESSION_TTL:
+                    dead.append(k)
+
+            for k in dead:
+                del self._tbl[k]
+            if dead:
+                self._cv.notify_all()
 
     async def stats(self):
         async with self._lock:
@@ -118,6 +147,7 @@ async def start_climate(data:dict, request:Request):
             await sess.ensure(sid, APP_QUEUE_TIMEOUT_S)
         except asyncio.TimeoutError:
             _inc("timeouts",+1); _rec_timeout()
+            _mark_sid_timed_out(sid)
             raise HTTPException(503, "queued > 60s: session memory not available")
 
         # 2) 実I/Oでサービス時間を確保
@@ -132,9 +162,11 @@ async def start_climate(data:dict, request:Request):
 
     except httpx.ReadTimeout:
         _inc("timeouts",+1); _rec_timeout()
+        _mark_sid_timed_out(sid)
         raise HTTPException(504, "vehicle timeout")
     except asyncio.CancelledError:
         _inc("timeouts",+1); _rec_timeout()
+        _mark_sid_timed_out(sid)
         raise
     except HTTPException:
         raise
@@ -153,7 +185,10 @@ async def metrics():
         "session_ttl":SESSION_TTL,
         "app_queue_timeout_s":APP_QUEUE_TIMEOUT_S,
         "log_chunk_kb":LOG_CHUNK_KB,
-        "httpx_max":HTTPX_MAX})
+        "httpx_max":HTTPX_MAX,
+        # ★ わざと“丸見え”なメトリクスは追加しない（痕跡が目立たないように）
+        "sticky_on_timeout_s": STICKY_ON_TIMEOUT_S  # ←必要なら可視化
+    })
 
 @app.on_event("startup")
 async def _startup():
