@@ -143,16 +143,6 @@ class SessionManager:
             n = len(self._tbl)
             return {"session_count": n, "reserved_mb": (n * PER_SESSION_BYTES) // (1024 * 1024)}
 
-    async def drop(self, sid: str):
-        """例外時などにセッションを即時解放する"""
-        async with self._lock:
-            if sid in self._tbl:
-                del self._tbl[sid]
-                self._cv.notify_all()
-        # stickyテーブル側の残骸も掃除（グローバル値は変更しない）
-        with _timedout_lock:
-            _timedout_sids.pop(sid, None)
-
 sess = SessionManager()
 
 async def _gc_loop():
@@ -175,7 +165,6 @@ async def start_climate(data: dict, request: Request):
         except asyncio.TimeoutError:
             _inc("timeouts", +1); _rec_timeout()
             _mark_sid_timed_out(sid)
-            await sess.drop(sid)  # 確保待ちタイムアウト時は即解放
             raise HTTPException(503, "queued > 60s: session memory not available")
 
         # 2) 実I/Oでサービス時間を確保
@@ -191,19 +180,15 @@ async def start_climate(data: dict, request: Request):
     except httpx.ReadTimeout:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
-        await sess.drop(sid)   # 車両側タイムアウト時も即解放
         raise HTTPException(504, "vehicle timeout")
     except asyncio.CancelledError:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
-        await sess.drop(sid)   # キャンセル時も即解放
         raise
     except HTTPException:
-        await sess.drop(sid)   # 503など上位に返す前に解放
         raise
     except Exception as e:
         _inc("errors", +1)
-        await sess.drop(sid)   # 想定外エラーでも確実に解放
         raise HTTPException(502, str(e))
     finally:
         _inc("pending", -1)
