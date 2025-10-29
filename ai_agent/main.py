@@ -56,14 +56,15 @@ def list_files(directory: str) -> list[str]:
 # --- エージェント定義 ---
 
 # 2. 修復案提案エージェント (SolutionPlanner)
-# 原因特定エージェントから分析結果を受け取り、具体的な解決策を提示します。
+# 原因特定エージェントからの分析結果を受け取り、具体的な解決策を提示します。
 solution_planner = Agent(
     name="SolutionPlanner",
     instructions=(
         "You are an expert in devising concrete, actionable repair plans for identified issues. "
         "Based on the failure analysis report from the ProblemIdentifier, "
         "provide a specific code modification proposal, detailing which part of which file to modify and how. "
-        "Also, suggest long-term architectural improvements if necessary."
+        "In doing so, you may add functions, but you must not delete existing code. "
+        "Also, strictly follow the constraints written in the code comments."
     )
 )
 
@@ -77,6 +78,9 @@ problem_identifier = Agent(
         "and the associated source code in `/app/source` to determine the root cause of a failure. "
         "First, use `read_application_log` to read the logs and find errors or abnormal patterns (e.g., timeouts, error messages). "
         "Next, use `list_files` and `read_file` to investigate the relevant source code and determine why the error occurred. "
+        "Note that you do not need to investigate any Dockerfile. "
+        "The problematic locations are not necessarily limited to a single system. "
+        "but it is unlikely that the root cause lies in the smartphone application or the vehicle itself."
         "Your task is to identify the root cause. Analyze the identified cause in detail and hand off the results to the SolutionPlanner."
     ),
     handoffs=[solution_planner]
