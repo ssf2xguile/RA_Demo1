@@ -12,6 +12,8 @@ services:
     restart: on-failure
     depends_on:
       - vehicle
+    ports:
+      - "8000:8000"
     profiles:
       - app
 
@@ -55,6 +57,7 @@ services:
       - ./cloud_api:/app/source/cloud_api:ro
       - ./nginx:/app/source/nginx:ro
       - ./vehicle_simulator:/app/source/vehicle_simulator:ro
+      - ./docker-compose.yaml:/app/source/docker-compose.yaml:ro
     environment:
       # 実行時にOpenAIのAPIキーを設定してください
       - OPENAI_API_KEY=

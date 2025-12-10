@@ -7,12 +7,12 @@ import httpx, os as _os
 
 # === Tunables (env) ===
 VEHICLE_BASE = os.getenv("VEHICLE_SIMULATOR_URL", "http://vehicle:8001")
-HTTPX_MAX = int(os.getenv("HTTPX_MAX", "1"))           # 下流は直列寄り (変更不可)
-REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウト (変更不可)
+HTTPX_MAX = int(os.getenv("HTTPX_MAX", "1"))           # 下流は直列寄り (変更可)
+REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウト (変更可)
 
 PER_SESSION_BYTES = int(os.getenv("PER_SESSION_BYTES", str(10 * 1024 * 1024)))  # 10MB/セッション (変更不可)
 MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))    # 同時保持上限（≒上限メモリ） (変更不可)
-SESSION_TTL = int(os.getenv("SESSION_TTL", "5"))       # アイドルTTLで解放 (変更不可)
+SESSION_TTL = int(os.getenv("SESSION_TTL", "5"))       # アイドルTTLで解放 (変更可)
 APP_QUEUE_TIMEOUT_S = int(os.getenv("APP_QUEUE_TIMEOUT_S", "60"))  # メモリ確保待ちの上限 (変更不可)
 
 LOG_PATH = os.getenv("SYNC_LOG_PATH", "/data/proxy.log")

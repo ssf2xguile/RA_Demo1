@@ -3,21 +3,30 @@ import glob
 from agents import Agent, function_tool, Runner, Handoff
 import asyncio
 import openai
+from openai.types.responses import ResponseTextDeltaEvent
 
 # --- ツール定義 ---
+ALLOWED_SERVER_DIRS = [
+    "/app/source/cloud_api",
+    "/app/source/nginx",
+    "/app/source/docker-compose.yaml"
+]
 
 @function_tool
-def read_application_log() -> str:
+def read_log_file(log_name: str) -> str:
     """
-    ./logs/app.log に保存されたアプリケーションのログファイルを読み取ります。
-    このエージェントを実行する前に、必ずアプリケーションを実行してログを生成しておく必要があります。
+    ./logs/ ディレクトリにあるログファイルを読み取ります。
+    引数 log_name には 'app.log' または 'monitor.log' を指定してください。
     """
-    log_path = "/app/logs/app.log"
+    if log_name not in ["app.log", "monitor.log"]:
+        return "エラー: 指定できるログファイルは 'app.log' または 'monitor.log' のみです。"
+
+    log_path = f"/app/logs/{log_name}"
     try:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            # ログが非常に大きい可能性を考慮し、最後の100行を読み込む
+            # 最後の200行を読み込む
             lines = f.readlines()
-            return "".join(lines[-100:])
+            return "".join(lines[-200:])
     except FileNotFoundError:
         return f"エラー: ログファイルが {log_path} に見つかりませんでした。先にアプリケーションを実行してログファイルを生成してください。"
     except Exception as e:
@@ -25,13 +34,17 @@ def read_application_log() -> str:
 
 @function_tool
 def read_file(file_path: str) -> str:
-    """指定されたパスのソースコードファイルの内容を読み取ります。"""
     try:
-        # セキュリティのため、/app/source ディレクトリ内のファイルのみを対象とする
         base_path = os.path.abspath("/app/source")
         target_path = os.path.abspath(file_path)
+        
+        is_allowed = any(target_path.startswith(os.path.abspath(d)) for d in ALLOWED_SERVER_DIRS)
+        
         if not target_path.startswith(base_path):
-            return "エラー: アクセスが許可されていないディレクトリです。/app/source 内のファイルのみ読み取れます。"
+             return "エラー: アクセスが許可されていないディレクトリです。/app/source 内のファイルのみ読み取れます。"
+        
+        if not is_allowed:
+            return "エラー: あなたはサーバーサイドエンジニアです。スマホアプリや車両のコードにアクセスする権限はありません。"
 
         with open(target_path, 'r', encoding='utf-8', errors='ignore') as f:
             return f.read()
@@ -40,56 +53,120 @@ def read_file(file_path: str) -> str:
 
 @function_tool
 def list_files(directory: str) -> list[str]:
-    """指定されたディレクトリ内のソースコードファイルとディレクトリのリストを再帰的に返します。"""
+    """
+    指定されたディレクトリ内のサーバーサイド関連ファイル（cloud_api, nginx）のみをリスト化して返します。
+    """
     try:
-        # セキュリティのため、/app/source ディレクトリ内のファイルのみを対象とする
         base_path = os.path.abspath("/app/source")
         target_path = os.path.abspath(directory)
         if not target_path.startswith(base_path):
             return ["エラー: アクセスが許可されていないディレクトリです。/app/source 内のみリスト化できます。"]
 
-        return glob.glob(f"{target_path}/**/*.py", recursive=True)
+        file_patterns = ["*.py", "*.conf", "*.yml", "*.yaml"]
+        files = []
+
+        found_files = []
+        for pattern in file_patterns:
+            found_files.extend(glob.glob(f"{target_path}/**/{pattern}", recursive=True))
+            
+        filtered_files = []
+        for f in found_files:
+            abs_f = os.path.abspath(f)
+            if any(abs_f.startswith(os.path.abspath(d)) for d in ALLOWED_SERVER_DIRS):
+                filtered_files.append(f)
+        
+        if not filtered_files:
+             return ["指定されたディレクトリ内に、アクセス可能なサーバーサイドのソースコードは見つかりませんでした。cloud_api または nginx ディレクトリを確認してください。"]
+
+        return filtered_files
     except Exception as e:
         return [f"ファイルのリスト化中にエラーが発生しました: {e}"]
 
+@function_tool
+def apply_patch_to_staging(diff_text: str) -> str:
+    """
+    Apply a unified diff patch to the staging source directory.
+    This function does NOT touch /app/source directly.
+    """
+    import subprocess
+    import os
+    staging_path = "/app/staging/source"
 
-# --- エージェント定義 ---
+    # Ensure the staging directory exists
+    os.makedirs(staging_path, exist_ok=True)
 
-# 2. 修復案提案エージェント (SolutionPlanner)
-# 原因特定エージェントからの分析結果を受け取り、具体的な解決策を提示します。
-solution_planner = Agent(
-    name="SolutionPlanner",
+    # Write diff to a temporary file
+    patch_path = "/tmp/patch.diff"
+    with open(patch_path, "w", encoding="utf-8") as f:
+        f.write(diff_text)
+
+    # Apply the patch using `patch` command
+    try:
+        subprocess.run(
+            ["patch", "-p1", "-d", staging_path, "-i", patch_path],
+            check=True,
+            text=True
+        )
+        return "✅ Patch applied successfully to staging environment."
+    except subprocess.CalledProcessError as e:
+        return f"❌ Failed to apply patch: {e}"
+
+@function_tool
+def compose_up_staging() -> str:
+    """Bring up the staging Docker Compose environment."""
+    import subprocess
+    compose_file = "/app/compose.staging/docker-compose.yml"
+    try:
+        subprocess.run(["docker", "compose", "-f", compose_file, "up", "-d", "--build"], check=True)
+        return "✅ Staging environment started successfully."
+    except subprocess.CalledProcessError as e:
+        return f"❌ Failed to start staging environment: {e}"
+
+@function_tool
+def compose_down_staging() -> str:
+    """Tear down the staging Docker Compose environment."""
+    import subprocess
+    compose_file = "/app/compose.staging/docker-compose.yml"
+    try:
+        subprocess.run(["docker", "compose", "-f", compose_file, "down", "-v"], check=True)
+        return "🧹 Staging environment cleaned up successfully."
+    except subprocess.CalledProcessError as e:
+        return f"⚠️ Failed to tear down staging environment: {e}"
+
+
+# 2. 修復案提案エージェント (RepairPlanning)
+repair_planning = Agent(
+    name="RepairPlanning",
     instructions=(
         "You are an expert in devising concrete, actionable repair plans for identified issues. "
-        "Based on the failure analysis report from the ProblemIdentifier, "
+        "Based on the failure analysis report from the FaultLocalization, "
         "provide a specific code modification proposal, detailing which part of which file to modify and how. "
-        "In doing so, you may add functions, but you must not delete existing code. "
+        "In doing so, you may add functions and change values, but you must not delete existing code. "
         "Also, strictly follow the constraints written in the code comments."
     )
 )
 
-# 1. 原因特定エージェント (ProblemIdentifier)
-# ログファイルとソースコードを分析し、問題の根本原因を特定します。
-problem_identifier = Agent(
-    name="ProblemIdentifier",
-    tools=[read_application_log, list_files, read_file],
+# 1. 原因特定エージェント (FaultLocalization)
+fault_localization = Agent(
+    name="FaultLocalization",
+    tools=[read_log_file, list_files, read_file],
     instructions=(
-        "You are a system failure investigator. Your expertise is analyzing the log file at `/app/logs/app.log` "
-        "and the associated source code in `/app/source` to determine the root cause of a failure. "
-        "First, use `read_application_log` to read the logs and find errors or abnormal patterns (e.g., timeouts, error messages). "
-        "Next, use `list_files` and `read_file` to investigate the relevant source code and determine why the error occurred. "
-        "Note that you do not need to investigate any Dockerfile. "
-        "The problematic locations are not necessarily limited to a single system. "
-        "but it is unlikely that the root cause lies in the smartphone application or the vehicle itself."
-        "Your task is to identify the root cause. Analyze the identified cause in detail and hand off the results to the SolutionPlanner."
+        "You are a Senior System Architect responsible for diagnosing complex failures in distributed systems. "
+        "Your goal is to identify the root cause of the failure by analyzing the interaction between components (Nginx, App Server). "
+        "\n"
+        "**Investigation Principles:**\n"
+        "1. **Holistic View:** Do not view errors in isolation. Analyze how a request flows through the entire system (Proxy -> App) and identify where the bottleneck occurs.\n"
+        "2. **Configuration Consistency:** Verify if the operational parameters (timeouts, limits, buffers) are consistent across different layers. "
+        "3. **State Analysis:** Investigate how the system manages state (e.g., sessions, connections) under error conditions. "
+        "\n"
+        "Analyze the provided logs and source code based on these principles. "
+        "Identify the logic or configuration that causes the instability and hand off the results to the RepairPlanningAgent."
     ),
-    handoffs=[solution_planner]
+    handoffs=[repair_planning]
 )
 
 
-# --- オーケストレーション ---
 async def main():
-    # OpenAI APIキーの確認
     if not os.environ.get("OPENAI_API_KEY"):
         print("エラー: 環境変数 OPENAI_API_KEY が設定されていません。")
         return
@@ -98,30 +175,25 @@ async def main():
     print("AIエージェントによるログ分析を開始します...")
     print("="*50)
 
-    # 開始プロンプト
     initial_prompt = (
-        "アプリケーションログ `app.log` を分析し、エラーの根本原因を特定してください。"
-        "特定後、その原因を解決するための修復計画を作成してください。"
+        "アプリケーションログ `app.log` とモニタリングログ `monitor.log` を分析し、"
+        "システムが高負荷時に不安定になる根本原因を特定してください。"
+        "サーバーサイドの構成（ソースコードおよび設定ファイル）に潜む構造的な欠陥や設定の不整合を指摘し、"
+        "修復プランを作成してください。"
     )
 
-    final_result = None
-    try:
-        # 原因特定エージェントからオーケストレーションを開始
-        final_result = await Runner.run(problem_identifier, input=initial_prompt)
-    except Exception as e:
-        print(f"エージェントの実行中に予期せぬエラーが発生しました: {e}")
+    streaming = Runner.run_streamed(fault_localization, input=initial_prompt)
+    async for event in streaming.stream_events():
+        # 1. エージェントが切り替わった場合
+        if event.type == "agent_updated_stream_event":
+            current_agent = event.new_agent.name
+            print(f"\n\n[{current_agent}]")
 
-    if final_result and final_result.final_output:
-        print("\n--- ✅ 分析と修復案の提案が完了しました ---")
-        print(final_result.final_output)
-    else:
-        print("\n--- ❌ エラー分析または修復案の生成に失敗しました。---")
-
-    print("\n" + "="*50)
-    print("分析プロセスを終了します。")
-    print("="*50)
+        # 2. テキスト生成（中間出力）の場合
+        elif event.type == "raw_response_event":
+            if isinstance(event.data, ResponseTextDeltaEvent):
+                print(event.data.delta, end="", flush=True)
 
 
 if __name__ == "__main__":
-    # agentsライブラリがasyncioを使用するため、非同期関数として実行
     asyncio.run(main())
