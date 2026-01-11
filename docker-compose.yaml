@@ -52,11 +52,7 @@ services:
     container_name: ai_agent
     command: python main.py
     volumes:
-      - ./logs:/app/logs:ro
-      - ./car_app:/app/source/car_app:ro
-      - ./cloud_api:/app/source/cloud_api:ro
-      - ./nginx:/app/source/nginx:ro
-      - ./vehicle_simulator:/app/source/vehicle_simulator:ro
+      - .:/app/source
       - ./docker-compose.yaml:/app/source/docker-compose.yaml:ro
     environment:
       # 実行時にOpenAIのAPIキーを設定してください
