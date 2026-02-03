@@ -1,6 +1,6 @@
 import requests
 import uuid
-import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import logging 
 import sys 
@@ -29,30 +29,28 @@ def send_request(request_id):
         # エラーなのでlogging.errorに変更
         logging.error(f"Client: [Req ID: {request_id}] ERROR! An unexpected error occurred: {e}")
 
-def run_burst(num_requests):
+def run_burst(num_requests, executor):
     """指定された数のリクエストを並行して送信する"""
-    threads = []
     for _ in range(num_requests):
         req_id = str(uuid.uuid4())
-        thread = threading.Thread(target=send_request, args=(req_id,))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
+        executor.submit(send_request, req_id)
 
 if __name__ == "__main__":
     start_time = time.time()
+    normal_burst_size = 20
+    overload_burst_size = 600
+    burst_interval_s = 5
+    executor = ThreadPoolExecutor(max_workers=overload_burst_size)
     # 最初の20秒間は、5秒ごとに20件の同時リクエストを送信（正常な負荷）
     logging.info("\n" + "="*50)
     logging.info("="*50 + "\n")
     while time.time() - start_time < 20:
-        run_burst(20)
-        time.sleep(5)
+        run_burst(normal_burst_size, executor)
+        time.sleep(burst_interval_s)
 
     # 20秒経過後、5秒ごとに600件の同時リクエストを送信（過負荷）
     logging.info("\n" + "="*50)
     logging.info("="*50 + "\n")
     while True:
-        run_burst(600)
-        time.sleep(5)
+        run_burst(overload_burst_size, executor)
+        time.sleep(burst_interval_s)
