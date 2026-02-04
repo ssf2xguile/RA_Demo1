@@ -1,34 +1,38 @@
 import os, time, uuid, asyncio, threading
 from collections import deque
 from typing import Dict, Deque, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import httpx, os as _os
 
 # === Tunables (env) ===
 VEHICLE_BASE = os.getenv("VEHICLE_SIMULATOR_URL", "http://vehicle:8001")
-HTTPX_MAX = int(os.getenv("HTTPX_MAX", "1"))           # 下流は直列寄り (変更可)
+HTTPX_MAX = int(os.getenv("HTTPX_MAX", "2"))           # 下流は直列寄り (変更可)
 REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウト (変更可)
 
-PER_SESSION_BYTES = int(os.getenv("PER_SESSION_BYTES", str(10 * 1024 * 1024)))  # 10MB/セッション (変更不可)
-MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "50"))    # 同時保持上限（≒上限メモリ） (変更不可)
-SESSION_TTL = int(os.getenv("SESSION_TTL", "5"))       # アイドルTTLで解放 (変更可)
+PER_SESSION_BYTES = int(os.getenv("PER_SESSION_BYTES", str(1 * 1024 * 1024)))  # 1MB/セッション (変更不可)
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))    # 同時保持上限（≒上限メモリ） (変更不可)
+SESSION_TTL = int(os.getenv("SESSION_TTL", "60"))       # アイドルTTLで解放 (変更可)
 APP_QUEUE_TIMEOUT_S = int(os.getenv("APP_QUEUE_TIMEOUT_S", "60"))  # メモリ確保待ちの上限 (変更不可)
 
 LOG_PATH = os.getenv("SYNC_LOG_PATH", "/data/proxy.log")
-LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "514"))   # 514KB/req を同期書き込み (変更不可)
+LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "16"))   # 16KB/req を同期書き込み (変更不可)
+LOG_WORKERS = int(os.getenv("LOG_WORKERS", "1"))  # 実運用で「監査ログは安全のため直列寄り」みたいなのがありがち
+_log_exec = ThreadPoolExecutor(max_workers=LOG_WORKERS)
 
 METRICS_WINDOW_S = int(os.getenv("METRICS_WINDOW_S", "5"))  # 直近窓 (変更不可)
 
 STICKY_ON_TIMEOUT_S = int(os.getenv("STICKY_ON_TIMEOUT_S", "600"))
-
+START_TIME = time.time()
 # === App / Client ===
 app = FastAPI()
 limits = httpx.Limits(max_connections=HTTPX_MAX, max_keepalive_connections=HTTPX_MAX)
 client = httpx.AsyncClient(base_url=VEHICLE_BASE, timeout=REQ_TIMEOUT, limits=limits)
 
 # === Metrics ===
-_metrics = {"pending": 0, "done": 0, "timeouts": 0, "errors": 0}
+_metrics = {"pending": 0, "done": 0, "timeouts": 0, "errors": 0, "arrived_total": 0}
 _met_lock = threading.Lock()
 _arrivals: Deque[Tuple[float, int]] = deque()
 _timeouts: Deque[Tuple[float, int]] = deque()
@@ -44,6 +48,7 @@ def _snap():
 def _rec_arrival():
     now = time.time()
     _arrivals.append((now, 1))
+    _inc("arrived_total", +1)
     while _arrivals and now - _arrivals[0][0] > METRICS_WINDOW_S:
         _arrivals.popleft()
 
@@ -78,7 +83,7 @@ def sync_append_kb(path: str, kb: int, line: str):
 class _Entry:
     __slots__ = ("buf", "last_used")
     def __init__(self):
-        self.buf = bytearray(PER_SESSION_BYTES)  # 実際に10MB確保（zero-initでピーク抑制）
+        self.buf = bytearray(PER_SESSION_BYTES)  # 実際に1MB確保（zero-initでピーク抑制）
         self.last_used = time.time()
     def touch(self):
         self.last_used = time.time()
@@ -138,6 +143,15 @@ class SessionManager:
             if dead:
                 self._cv.notify_all()
 
+    # async def drop(self, sid: str):
+    #     """例外時などにセッションを即時解放する"""
+    #     async with self._lock:
+    #         if sid in self._tbl:
+    #             del self._tbl[sid]
+    #             self._cv.notify_all()
+    #     with _timedout_lock:
+    #         _timedout_sids.pop(sid, None)
+
     async def stats(self):
         async with self._lock:
             n = len(self._tbl)
@@ -165,10 +179,18 @@ async def start_climate(data: dict, request: Request):
         except asyncio.TimeoutError:
             _inc("timeouts", +1); _rec_timeout()
             _mark_sid_timed_out(sid)
+            await sess.drop(sid)
             raise HTTPException(503, "queued > 60s: session memory not available")
 
-        # 2) 実I/Oでサービス時間を確保
-        await asyncio.to_thread(sync_append_kb, LOG_PATH, LOG_CHUNK_KB, f"{time.time()} {req_id} {sid}")
+        # 2) 実I/Oでサービス時間を確保（同期fsyncログを小さなスレッドプールに投げる）
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            _log_exec,
+            sync_append_kb,
+            LOG_PATH,
+            LOG_CHUNK_KB,
+            f"{time.time()} {req_id} {sid}",
+        )
 
         # 3) 下流は接続プール小さめで直列化
         r = await client.post("/command", json={"command": "START_CLIMATE", **data})
@@ -180,32 +202,44 @@ async def start_climate(data: dict, request: Request):
     except httpx.ReadTimeout:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
+      #  await sess.drop(sid)
         raise HTTPException(504, "vehicle timeout")
     except asyncio.CancelledError:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
+     #   await sess.drop(sid)
         raise
     except HTTPException:
+    #    await sess.drop(sid)
         raise
     except Exception as e:
         _inc("errors", +1)
+    #    await sess.drop(sid)
         raise HTTPException(502, str(e))
     finally:
         _inc("pending", -1)
 
 @app.get("/metrics")
 async def metrics():
+    now_epoch = time.time()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    uptime_s = round(now_epoch - START_TIME, 2)
+
     m = _snap(); s = await sess.stats(); r = _recent()
-    return JSONResponse({**m, **s, **r,
+    return JSONResponse({
+        "timestamp_epoch": now_epoch,
+        "timestamp_iso": now_iso,
+        "uptime_s": uptime_s,
+        **m, **s, **r,
         "per_session_bytes": PER_SESSION_BYTES,
         "max_sessions": MAX_SESSIONS,
         "session_ttl": SESSION_TTL,
         "app_queue_timeout_s": APP_QUEUE_TIMEOUT_S,
         "log_chunk_kb": LOG_CHUNK_KB,
         "httpx_max": HTTPX_MAX,
-        # ★ わざと“丸見え”なメトリクスは追加しない（痕跡が目立たないように）
-        "sticky_on_timeout_s": STICKY_ON_TIMEOUT_S  # ←必要なら可視化
+        "sticky_on_timeout_s": STICKY_ON_TIMEOUT_S
     })
+
 
 @app.on_event("startup")
 async def _startup():
@@ -215,3 +249,4 @@ async def _startup():
 @app.on_event("shutdown")
 async def _shutdown():
     await client.aclose()
+    _log_exec.shutdown(wait=False)

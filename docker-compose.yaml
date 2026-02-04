@@ -5,15 +5,21 @@ services:
   api:
     build: ./cloud_api
     container_name: fastapi_app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --backlog 4096
     volumes:
       - ./cloud_api:/app
+      - ./logs:/data
     mem_limit: 1gb
     restart: on-failure
     depends_on:
-      - vehicle
+      vehicle:
+        condition: service_started
     ports:
       - "8000:8000"
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
     profiles:
       - app
 
@@ -25,6 +31,10 @@ services:
     depends_on:
       - api
     restart: on-failure
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
     profiles:
       - app
 
