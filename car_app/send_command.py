@@ -5,155 +5,118 @@ import logging
 import random
 import httpx
 import time
-import multiprocessing
+import sys
+import resource
+import uvloop
+
+# --- 設定 ---
+# 1プロセスあたりの担当ユーザー数 (3000人)
+USERS_PER_PROCESS = 3000
+# 全体のサイクル秒数 (12プロセス × 5秒 = 60秒)
+TOTAL_CYCLE_SECONDS = 60
+
+# --- 引数/環境変数から設定値を取得 ---
+# プロセスID (0〜11) を環境変数または引数から取得
+try:
+    PROCESS_ID = int(os.getenv("PROCESS_ID", sys.argv[1] if len(sys.argv) > 1 else "0"))
+except ValueError:
+    PROCESS_ID = 0
+
+# このプロセスが担当するユーザーIDの開始番号
+# Proc 0: 0-2999, Proc 1: 3000-5999, ...
+USER_ID_OFFSET = PROCESS_ID * USERS_PER_PROCESS
 
 # ログ設定
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format=f"[Proc-{PROCESS_ID:02d}] %(asctime)s - %(message)s")
 logger = logging.getLogger("LoadGenerator")
 
 API_URL = os.getenv("API_URL", "http://nginx:80/api/v1/vehicle/climate/start")
-NUM_USERS = int(os.getenv("NUM_USERS", "31300"))
 USER_PREFIX = os.getenv("USER_PREFIX", "user")
 
 # 負荷設定
+# 最初の数回は少なめ、その後本気出す
 NORMAL_BURST = 20
 OVERLOAD_BURST = 270
-BURST_INTERVAL_S = 5
 
-# httpx 設定
 TIMEOUT_S = float(os.getenv("CLIENT_TIMEOUT_S", "65"))
 
+def maximize_fd_limit():
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    except Exception:
+        pass
+
 def pick_user_and_vehicle():
-    i = random.randrange(NUM_USERS)
+    # 担当範囲 (Offset 〜 Offset + 2999) からランダムに選ぶ
+    i = USER_ID_OFFSET + random.randrange(USERS_PER_PROCESS)
     user_id = f"{USER_PREFIX}-{i:06d}"
     vehicle_id = f"vin-{i:06d}"
     proxy_session = f"dev-{i:06d}"
     return user_id, vehicle_id, proxy_session
 
-# ==========================================
-# Process 1: リクエスト送信役 (Requester)
-# サーバーを落とすことだけに集中し、結果の集計は最低限にする
-# ==========================================
 async def send_request(client):
     user_id, vehicle_id, proxy_session = pick_user_and_vehicle()
     request_id = str(uuid.uuid4())
     try:
-        # レスポンスの中身は読まずに閉じることで負荷を軽減
         await client.post(
             API_URL,
             json={"user_id": user_id, "vehicle_id": vehicle_id},
             headers={"X-Request-ID": request_id, "X-Proxy-Session": proxy_session},
         )
     except:
-        pass # 攻撃側はエラーを無視する（測定はMonitorに任せる）
+        pass
 
 async def request_burst(client, n, batch_id):
-    logger.info(f"[Requester] Batch {batch_id} FIRE! ({n} reqs)")
-    # create_taskだけで保持せず、結果も待たない（Fire and Forgetの徹底）
+    logger.info(f"Batch {batch_id} FIRE! ({n} reqs)")
     for _ in range(n):
         asyncio.create_task(send_request(client))
 
 async def run_requester():
-    # リクエスト送信用は制限を緩くする
-    limits = httpx.Limits(max_connections=10000, max_keepalive_connections=10000)
+    uvloop.install()
+    maximize_fd_limit()
+
+    limits = httpx.Limits(max_connections=5000, max_keepalive_connections=5000)
     timeout = httpx.Timeout(TIMEOUT_S)
 
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        start_time = time.time()
-        batch_id = 0
-        logger.info("=== [Requester] Process Started ===")
+        # 基準となる開始時刻
+        base_start_time = time.time()
+        
+        # 自分の最初の送信タイミングまで待機 (0, 5, 10... 55秒)
+        initial_delay = PROCESS_ID * 5
+        logger.info(f"Waiting {initial_delay}s to start first burst...")
+        await asyncio.sleep(initial_delay)
 
+        batch_id = 0
         while True:
             batch_id += 1
             loop_start = time.time()
-            elapsed = loop_start - start_time
+            
+            # 経過時間（全体）
+            elapsed_total = loop_start - base_start_time
 
-            # フェーズ判定
-            if elapsed < 20:
-                burst_size = NORMAL_BURST
+            # 最初の20秒（全体時間での判断）はウォームアップ
+            if elapsed_total < 20 + initial_delay:
+                 burst_size = NORMAL_BURST
             else:
-                burst_size = OVERLOAD_BURST
+                 burst_size = OVERLOAD_BURST
 
-            # バースト実行（投げっぱなし）
+            # バースト実行
             asyncio.create_task(request_burst(client, burst_size, batch_id))
 
-            # 正確なインターバル制御
-            sleep_duration = BURST_INTERVAL_S - (time.time() - loop_start)
+            # 次のサイクル (60秒後) まで待機
+            now = time.time()
+            sleep_duration = TOTAL_CYCLE_SECONDS - (now - loop_start)
+            
             if sleep_duration > 0:
                 await asyncio.sleep(sleep_duration)
             else:
-                # 遅延しても即座に次を撃つ（攻撃の手を緩めない）
                 await asyncio.sleep(0)
 
-def start_requester_process():
+# Monitorプロセスは別途立ち上げるため、ここにはRequesterのみ記述
+if __name__ == "__main__":
     try:
         asyncio.run(run_requester())
     except KeyboardInterrupt:
         pass
-
-# ==========================================
-# Process 2: 監視役 (Monitor)
-# 定期的(1秒ごと)にリクエストを送り、正確な死活監視を行う
-# ==========================================
-async def run_monitor():
-    # 監視用は独立したクライアント
-    limits = httpx.Limits(max_connections=10, max_keepalive_connections=10)
-    timeout = httpx.Timeout(TIMEOUT_S)
-
-    async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        logger.info("=== [Monitor] Process Started (1 probe/sec) ===")
-        
-        while True:
-            user_id, vehicle_id, proxy_session = pick_user_and_vehicle()
-            req_id = f"MONITOR-{uuid.uuid4()}"
-            start_ts = time.time()
-            status = "UNKNOWN"
-            
-            try:
-                resp = await client.post(
-                    API_URL,
-                    json={"user_id": user_id, "vehicle_id": vehicle_id},
-                    headers={"X-Request-ID": req_id, "X-Proxy-Session": proxy_session},
-                )
-                duration = time.time() - start_ts
-                status = resp.status_code
-                
-                if status == 200:
-                    logger.info(f"[Monitor] OK ({duration:.2f}s)")
-                else:
-                    logger.error(f"[Monitor] ERROR Status:{status} ({duration:.2f}s)")
-
-            except httpx.ReadTimeout:
-                logger.error(f"[Monitor] TIMEOUT > {TIMEOUT_S}s")
-            except httpx.ConnectError:
-                logger.error(f"[Monitor] CONNECTION REFUSED (Server Down?)")
-            except Exception as e:
-                logger.error(f"[Monitor] EXCEPTION: {type(e).__name__}")
-
-            # 1秒待機
-            await asyncio.sleep(1)
-
-def start_monitor_process():
-    try:
-        asyncio.run(run_monitor())
-    except KeyboardInterrupt:
-        pass
-
-# ==========================================
-# Main Entry Point
-# ==========================================
-if __name__ == "__main__":
-    # リクエスト送信プロセスと監視プロセスを分離して起動
-    requester = multiprocessing.Process(target=start_requester_process)
-    monitor = multiprocessing.Process(target=start_monitor_process)
-
-    requester.start()
-    monitor.start()
-
-    try:
-        requester.join()
-        monitor.join()
-    except KeyboardInterrupt:
-        requester.terminate()
-        monitor.terminate()
-        logger.info("Stopped by user.")

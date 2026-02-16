@@ -13,18 +13,18 @@ HTTPX_MAX = int(os.getenv("HTTPX_MAX", "2"))           # 下流は直列寄り (
 REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウト (変更可)
 
 PER_SESSION_BYTES = int(os.getenv("PER_SESSION_BYTES", str(1 * 1024 * 1024)))  # 1MB/セッション (変更不可)
-MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))    # 同時保持上限（≒上限メモリ） (変更不可)
-SESSION_TTL = int(os.getenv("SESSION_TTL", "60"))       # アイドルTTLで解放 (変更可)
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "240"))    # 同時保持上限（≒上限メモリ） (変更不可)
+SESSION_TTL = int(os.getenv("SESSION_TTL", "10"))       # アイドルTTLで解放 (変更可)
 APP_QUEUE_TIMEOUT_S = int(os.getenv("APP_QUEUE_TIMEOUT_S", "60"))  # メモリ確保待ちの上限 (変更不可)
 
 LOG_PATH = os.getenv("SYNC_LOG_PATH", "/data/proxy.log")
-LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "16"))   # 16KB/req を同期書き込み (変更不可)
+LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "1"))   # 1KB/req を同期書き込み (変更不可)
 LOG_WORKERS = int(os.getenv("LOG_WORKERS", "1"))  # 実運用で「監査ログは安全のため直列寄り」みたいなのがありがち
 _log_exec = ThreadPoolExecutor(max_workers=LOG_WORKERS)
 
 METRICS_WINDOW_S = int(os.getenv("METRICS_WINDOW_S", "5"))  # 直近窓 (変更不可)
 
-STICKY_ON_TIMEOUT_S = int(os.getenv("STICKY_ON_TIMEOUT_S", "600"))
+STICKY_ON_TIMEOUT_S = int(os.getenv("STICKY_ON_TIMEOUT_S", "10"))
 START_TIME = time.time()
 # === App / Client ===
 app = FastAPI()
@@ -83,7 +83,7 @@ def sync_append_kb(path: str, kb: int, line: str):
 class _Entry:
     __slots__ = ("buf", "last_used")
     def __init__(self):
-        self.buf = bytearray(PER_SESSION_BYTES)  # 実際に1MB確保（zero-initでピーク抑制）
+        self.buf = bytearray(PER_SESSION_BYTES)
         self.last_used = time.time()
     def touch(self):
         self.last_used = time.time()
@@ -202,19 +202,19 @@ async def start_climate(data: dict, request: Request):
     except httpx.ReadTimeout:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
-      #  await sess.drop(sid)
+        # await sess.drop(sid)
         raise HTTPException(504, "vehicle timeout")
     except asyncio.CancelledError:
         _inc("timeouts", +1); _rec_timeout()
         _mark_sid_timed_out(sid)
-     #   await sess.drop(sid)
+        # await sess.drop(sid)
         raise
     except HTTPException:
-    #    await sess.drop(sid)
+        # await sess.drop(sid)
         raise
     except Exception as e:
         _inc("errors", +1)
-    #    await sess.drop(sid)
+        # await sess.drop(sid)
         raise HTTPException(502, str(e))
     finally:
         _inc("pending", -1)
