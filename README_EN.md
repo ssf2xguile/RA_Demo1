@@ -15,6 +15,7 @@ The AI agent analyzes a unified log file that combines source code, configuratio
 - identify the root cause of failures, and  
 - generate recovery (repair) plans.
 
+Furthermore, there is a **timeout monitor application** (`timeout_monitor` directory) as an auxiliary tool to evaluate the connected car system. It visualizes the evolution of timeout counts over a period of 300 seconds from system startup as a bar chart, and can save the result as a screenshot (PNG) or a video (MP4).
 ---
 
 # Directory Structure
@@ -82,12 +83,14 @@ This README explains:
 - All commands are executed from the **repository root**  
 - `./logs` directory exists (if not, please create it)
 
-You will typically use up to **three terminals**:
+You will typically use up to **four terminals**:
 
-- **Terminal 1**: Start / stop the connected car system  
-- **Terminal 2**: Collect logs  
-- **Terminal 3**: Fetch metrics via `curl` or run the timeout monitor application  
+- **Terminal 1 (cmd)**: Start / stop the connected car system  
+- **Terminal 2 (cmd)**: Collect application logs into `app.log`  
+- **Terminal 3 (cmd)**: Fetch metrics via `curl` or run the timeout monitor application  
+- **Terminal 4 (PowerShell on Windows)**: Collect container resource usage into `monitor.log`  
 
+On Windows, note that **Terminal 4 must be PowerShell**, not Command Prompt, for the `monitor.log` script.
 ---
 
 ## 1. Start Connected Car System and Collect Logs
@@ -147,6 +150,61 @@ Once enough error logs have been collected, stop in the following order:
    ```
 
 ---
+## [Optional] Collect Resource Usage of Containers (monitor.log)
+
+`monitor.log` records resource usage (CPU percentage, memory usage, etc.) for each container every second.  
+It is created by processing the output of `docker stats` and writing it to `./logs/monitor.log`.
+
+Here we use **Terminal 4** and create `monitor.log` depending on your environment.
+
+On Windows, you **must** use **PowerShell** (not Command Prompt) to run the script for `monitor.log`.
+
+### Bash (Linux / macOS / WSL)
+
+In Terminal 4 (bash), move to the repository root and run:
+
+```bash
+cd /path/to/RA_Demo1
+while true; do
+  docker stats --no-stream --format "{{.Name}}, {{.CPUPerc}}, {{.MemUsage}}" | while read line; do
+    echo "$(date '+%Y/%m/%d %H:%M:%S.%2N'), $line"
+  done >> ./logs/monitor.log
+  sleep 1
+done
+```
+
+This command also continuously collects logs, so **keep this terminal open** while monitoring.
+
+### PowerShell (Windows)
+
+1. Open a new **Windows PowerShell** window  
+   (make sure it is PowerShell, **not** Command Prompt).
+2. Move to the repository root:
+
+   ```powershell
+   cd D:\Programming\MyPython\RA_Demo1
+   ```
+
+3. Run the following script:
+
+   ```powershell
+   while($true) {
+       $stats = docker stats --no-stream --format "{{.Name}}, {{.CPUPerc}}, {{.MemUsage}}"
+       $timestamp = Get-Date -Format "yyyy/MM/dd HH:mm:ss.ff"
+       foreach($line in $stats) {
+           "$timestamp, $line" | Out-File -FilePath ./logs/monitor.log -Append -Encoding UTF8
+       }
+       Start-Sleep -Seconds 1
+   }
+   ```
+
+This PowerShell window must also remain open while you are collecting `monitor.log`.
+
+After you stop the connected car system (see below), press `Ctrl + C` in this PowerShell window to stop the loop and finalize `monitor.log`.
+
+The AI agent and any later analysis may use both `app.log` and `monitor.log`, so collect both if you want full information.
+
+---
 
 ## 3. Analysis by the AI Agent
 
@@ -171,7 +229,7 @@ When processing finishes, the following results are printed to the terminal:
 
 ---
 
-## 4. [Optional] Retrieve Application Server Metrics via API
+## 4. [Evaluation] Retrieve Application Server Metrics via API
 
 If you want to check the internal metrics of `app_server/main.py`, use another terminal (**Terminal 3**) while the containers are running (Terminal 1).
 
@@ -218,7 +276,7 @@ Note: For this command, the working directory of Terminal 3 does **not** matter;
 
 ---
 
-## 5. [Optional] Monitoring Timeout Events in Real Time
+## 5. [Evaluation] Monitoring Timeout Events in Real Time
 
 The `timeout_monitor` directory contains utilities for visualizing timeout events on the application server in real time as bar charts.
 

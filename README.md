@@ -5,6 +5,8 @@
 
 また、それとは別に、AIエージェントシステムが存在します。これはコネクテッドカーシステムで発生した課題を、ソースコード&設定ファイル&各コンポーネントの実行ログが統合されたファイルを分析することで原因を突き止め、復旧プランを生成する役割を果たします。
 
+さらに、コネクテッドカーシステムを評価するための補助的なプログラムとして、タイムアウト数モニターアプリケーションがあります。これは、システム起動から300秒間におけるタイムアウト数の推移を棒グラフで可視化し、その結果をスクリーンショットや動画として保存できるアプリケーションです。
+
 # ディレクトリ構成
 ```
 D:.
@@ -95,6 +97,49 @@ docker compose --profile app logs --follow > ./logs/app.log
 docker compose --profile app down
 ```
 
+## [補足]コネクテッドカーシステムのリソース使用状況の収集
+monitor.log は、コネクテッドカーシステムのコンポーネント毎のCPU使用率やメモリ使用量など、リソース使用状況を1秒ごとに記録したログファイルです。docker statsコマンドの出力を加工して ./logs/monitor.logに書き出しています。
+
+ここでは新しくターミナル4を開き、環境に応じた方法で monitor.log を作成します。
+
+注意:  
+Windows で monitor.log を作成する場合は、必ず PowerShell を使用してください。コマンドプロンプト (cmd) ではなく PowerShell から実行する必要があります。
+
+### Bash (Linux / macOS / WSL) の場合
+ターミナル4で、リポジトリ直下に移動して次を実行します。
+
+```bash
+cd /path/to/RA_Demo1
+while true; do
+  docker stats --no-stream --format "{{.Name}}, {{.CPUPerc}}, {{.MemUsage}}" | while read line; do
+    echo "$(date '+%Y/%m/%d %H:%M:%S.%2N'), $line"
+  done >> ./logs/monitor.log
+  sleep 1
+done
+```
+
+このコマンドもログを監視し続けるため、このターミナルは開いたままにしてください。
+
+### PowerShell (Windows) の場合
+1. 新しく「Windows PowerShell」を起動します（コマンドプロンプトではないことに注意してください）。
+2. リポジトリ直下に移動します。
+3. 次のスクリプトを実行します。
+
+```powershell
+while($true) {
+    $stats = docker stats --no-stream --format "{{.Name}}, {{.CPUPerc}}, {{.MemUsage}}"
+    $timestamp = Get-Date -Format "yyyy/MM/dd HH:mm:ss.ff"
+    foreach($line in $stats) {
+        "$timestamp, $line" | Out-File -FilePath ./logs/monitor.log -Append -Encoding UTF8
+    }
+    Start-Sleep -Seconds 1
+}
+```
+
+この PowerShell ウィンドウも、monitor.log を取り続けるため開いたままにしてください。
+
+コネクテッドカーシステム停止後、Ctrl + Cを押してログ監視を停止します。AIエージェントの分析処理は、これらログを使う場合もあるため、必要に応じて取得してください。
+
 ## 3. AIエージェントによる分析
 AIエージェントは4つのコンポーネントとは独立しています。AIエージェントを起動します（ai_agent コンテナが起動し、main.py が実行されます）。
 ```
@@ -107,7 +152,7 @@ docker compose --profile agent up --build
 - エラーの根本原因の分析結果
 - 具体的なコード復旧案
 
-## 4. [その他]アプリケーションサーバの処理状況をAPIで取得
+## 4. [評価]アプリケーションサーバの処理状況をAPIで取得
 `app_server/main.py`での処理状況を確認したい場合は、ターミナル1でコンテナが動作している状態で、ターミナル3を開き次のAPIを叩きます。
 **Windows（例：PowerShell / CMD）**
 ```
@@ -124,7 +169,7 @@ curl -s http://localhost:8080/metrics
 ```
 補足ですが、ターミナル3でコマンド実行する際、ディレクトリはどこでも構いません。
 
-## 5. [その他]アプリケーションサーバのタイムアウト状況のモニタリング
+## 5. [評価]アプリケーションサーバのタイムアウト状況のモニタリング
 アプリケーションサーバのタイムアウト発生状況を、棒グラフとしてリアルタイムに監視するためのプログラムが `timeout_monitor` ディレクトリに用意されています。
 
 - `timeout_monitor_snapshot.py`  
