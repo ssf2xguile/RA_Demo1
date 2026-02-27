@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 import httpx, os as _os
 
 # === Tunables (env) ===
-VEHICLE_BASE = os.getenv("VEHICLE_SIMULATOR_URL", "http://vehicle:8001")
+VEHICLE_BASE = os.getenv("connected_car_URL", "http://connected-car:8001")
 HTTPX_MAX = int(os.getenv("HTTPX_MAX", "2"))           # 下流は直列寄り (変更可)
 REQ_TIMEOUT = int(os.getenv("REQ_TIMEOUT", "60"))      # 下流タイムアウト (変更可)
 
@@ -19,10 +19,10 @@ APP_QUEUE_TIMEOUT_S = int(os.getenv("APP_QUEUE_TIMEOUT_S", "60"))  # メモリ�
 
 LOG_PATH = os.getenv("SYNC_LOG_PATH", "/data/proxy.log")
 LOG_CHUNK_KB = int(os.getenv("LOG_CHUNK_KB", "1"))   # 1KB/req を同期書き込み (変更不可)
-LOG_WORKERS = int(os.getenv("LOG_WORKERS", "1"))  # 実運用で「監査ログは安全のため直列寄り」みたいなのがありがち
+LOG_WORKERS = int(os.getenv("LOG_WORKERS", "1"))
 _log_exec = ThreadPoolExecutor(max_workers=LOG_WORKERS)
 
-METRICS_WINDOW_S = int(os.getenv("METRICS_WINDOW_S", "5"))  # 直近窓 (変更不可)
+METRICS_WINDOW_S = int(os.getenv("METRICS_WINDOW_S", "5"))  # メトリクスを何秒間隔で提供するか (変更不可)
 
 STICKY_ON_TIMEOUT_S = int(os.getenv("STICKY_ON_TIMEOUT_S", "10"))
 START_TIME = time.time()

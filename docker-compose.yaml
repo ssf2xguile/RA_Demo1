@@ -2,17 +2,17 @@ version: '3.9'
 
 services:
   # ---- App Profile ----
-  api:
-    build: ./cloud_api
-    container_name: fastapi_app
+  app-server:
+    build: ./app_server
+    container_name: app_server
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --backlog 4096
     volumes:
-      - ./cloud_api:/app
+      - ./app_server:/app
       - ./logs:/data
     mem_limit: 1gb
     restart: on-failure
     depends_on:
-      vehicle:
+      connected-car:
         condition: service_started
     ports:
       - "8000:8000"
@@ -29,7 +29,7 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - api
+      - app-server
     restart: on-failure
     ulimits:
       nofile:
@@ -38,9 +38,9 @@ services:
     profiles:
       - app
 
-  car_app:
-    build: ./car_app
-    container_name: car_client
+  mobile_app:
+    build: ./mobile_app
+    container_name: mobile_app
     #command: python launcher.py
     depends_on:
       - nginx
@@ -48,9 +48,9 @@ services:
     profiles:
       - app
 
-  vehicle:
-    build: ./vehicle_simulator
-    container_name: vehicle_simulator
+  connected-car:
+    build: ./connected_car
+    container_name: connected_car
     command: uvicorn simulator:app --host 0.0.0.0 --port 8001
     restart: on-failure
     profiles:
@@ -62,11 +62,14 @@ services:
     container_name: ai_agent
     command: python main.py
     volumes:
-      - .:/app/source
+      - ./logs:/app/logs:ro
+      - ./mobile_app:/app/source/mobile_app:ro
+      - ./app_server:/app/source/app_server:ro
+      - ./nginx:/app/source/nginx:ro
+      - ./connected_car:/app/source/connected_car:ro
       - ./docker-compose.yaml:/app/source/docker-compose.yaml:ro
     environment:
       # 実行時にOpenAIのAPIキーを設定してください
       - OPENAI_API_KEY=
     profiles:
       - agent
-

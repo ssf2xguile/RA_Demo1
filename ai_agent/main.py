@@ -1,110 +1,166 @@
 import os
 import glob
-from agents import Agent, function_tool, Runner
+from agents import Agent, function_tool, Runner, Handoff
 import asyncio
 import openai
 from openai.types.responses import ResponseTextDeltaEvent
 
-# --- 設定 ---
-# 修正対象のルートディレクトリ（docker-composeでマウントした場所）
-PROJECT_ROOT = "/app/source"
-
-# --- ツール定義 (分析用) ---
-ALLOWED_FILES = [
-    "cloud_api/main.py",
-    "nginx/nginx.conf",
-    "docker-compose.yaml"
+# --- ツール定義 ---
+ALLOWED_SERVER_DIRS = [
+    "/app/source/app_server",
+    "/app/source/nginx",
+    "/app/source/docker-compose.yaml"
 ]
 
 @function_tool
 def read_log_file(log_name: str) -> str:
-    """ログファイル(app.log, monitor.log)を読み取ります。"""
-    log_path = os.path.join(PROJECT_ROOT, "logs", log_name)
+    """
+    ./logs/ ディレクトリにあるログファイルを読み取ります。
+    引数 log_name には 'app.log' または 'monitor.log' を指定してください。
+    """
+    if log_name not in ["app.log", "monitor.log"]:
+        return "エラー: 指定できるログファイルは 'app.log' または 'monitor.log' のみです。"
+
+    log_path = f"/app/logs/{log_name}"
     try:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # 最後の200行を読み込む
             lines = f.readlines()
-            # 分析精度向上のため、直近400行を読み込む
-            return "".join(lines[-400:])
+            return "".join(lines[-200:])
+    except FileNotFoundError:
+        return f"エラー: ログファイルが {log_path} に見つかりませんでした。先にアプリケーションを実行してログファイルを生成してください。"
     except Exception as e:
-        return f"ログ読み込みエラー: {e}"
+        return f"ログファイルの読み込み中にエラーが発生しました: {e}"
 
 @function_tool
-def read_file(relative_path: str) -> str:
-    """指定されたパスのソースコードを読み取ります。"""
-    target_path = os.path.join(PROJECT_ROOT, relative_path)
+def read_file(file_path: str) -> str:
     try:
+        base_path = os.path.abspath("/app/source")
+        target_path = os.path.abspath(file_path)
+        
+        is_allowed = any(target_path.startswith(os.path.abspath(d)) for d in ALLOWED_SERVER_DIRS)
+        
+        if not target_path.startswith(base_path):
+             return "エラー: アクセスが許可されていないディレクトリです。/app/source 内のファイルのみ読み取れます。"
+        
+        if not is_allowed:
+            return "エラー: あなたはサーバーサイドエンジニアです。スマホアプリや車両のコードにアクセスする権限はありません。"
+
         with open(target_path, 'r', encoding='utf-8', errors='ignore') as f:
             return f.read()
     except Exception as e:
-        return f"ファイル読み込みエラー: {e}"
+        return f"ファイルの読み込み中にエラーが発生しました: {e}"
 
 @function_tool
 def list_files(directory: str) -> list[str]:
-    """指定されたディレクトリ内のファイルをリスト化します。"""
-    target_dir = os.path.join(PROJECT_ROOT, directory)
+    """
+    指定されたディレクトリ内のサーバーサイド関連ファイル（app_server, nginx）のみをリスト化して返します。
+    """
     try:
-        files = glob.glob(f"{target_dir}/**/*", recursive=True)
-        # 相対パスに変換して返す
-        return [f.replace(PROJECT_ROOT + "/", "") for f in files if os.path.isfile(f)]
-    except Exception as e:
-        return [f"エラー: {e}"]
+        base_path = os.path.abspath("/app/source")
+        target_path = os.path.abspath(directory)
+        if not target_path.startswith(base_path):
+            return ["エラー: アクセスが許可されていないディレクトリです。/app/source 内のみリスト化できます。"]
 
-# --- ツール定義 (修正用) ---
+        file_patterns = ["*.py", "*.conf", "*.yml", "*.yaml"]
+        files = []
+
+        found_files = []
+        for pattern in file_patterns:
+            found_files.extend(glob.glob(f"{target_path}/**/{pattern}", recursive=True))
+            
+        filtered_files = []
+        for f in found_files:
+            abs_f = os.path.abspath(f)
+            if any(abs_f.startswith(os.path.abspath(d)) for d in ALLOWED_SERVER_DIRS):
+                filtered_files.append(f)
+        
+        if not filtered_files:
+             return ["指定されたディレクトリ内に、アクセス可能なサーバーサイドのソースコードは見つかりませんでした。app_server または nginx ディレクトリを確認してください。"]
+
+        return filtered_files
+    except Exception as e:
+        return [f"ファイルのリスト化中にエラーが発生しました: {e}"]
 
 @function_tool
-def overwrite_file(relative_path: str, content: str) -> str:
+def apply_patch_to_staging(diff_text: str) -> str:
     """
-    【危険】ホスト側のファイルを直接上書き保存します。
-    relative_path: プロジェクトルートからの相対パス（例: cloud_api/main.py）
+    Apply a unified diff patch to the staging source directory.
+    This function does NOT touch /app/source directly.
     """
-    target_path = os.path.join(PROJECT_ROOT, relative_path)
+    import subprocess
+    import os
+    staging_path = "/app/staging/source"
+
+    # Ensure the staging directory exists
+    os.makedirs(staging_path, exist_ok=True)
+
+    # Write diff to a temporary file
+    patch_path = "/tmp/patch.diff"
+    with open(patch_path, "w", encoding="utf-8") as f:
+        f.write(diff_text)
+
+    # Apply the patch using `patch` command
     try:
-        # ディレクトリがない場合は作成
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"✅ File overwritten: {relative_path}"
-    except Exception as e:
-        return f"❌ Failed to write file: {e}"
+        subprocess.run(
+            ["patch", "-p1", "-d", staging_path, "-i", patch_path],
+            check=True,
+            text=True
+        )
+        return "Patch applied successfully to staging environment."
+    except subprocess.CalledProcessError as e:
+        return f"Failed to apply patch: {e}"
+
+@function_tool
+def compose_up_staging() -> str:
+    """Bring up the staging Docker Compose environment."""
+    import subprocess
+    compose_file = "/app/compose.staging/docker-compose.yml"
+    try:
+        subprocess.run(["docker", "compose", "-f", compose_file, "up", "-d", "--build"], check=True)
+        return "Staging environment started successfully."
+    except subprocess.CalledProcessError as e:
+        return f"Failed to start staging environment: {e}"
+
+@function_tool
+def compose_down_staging() -> str:
+    """Tear down the staging Docker Compose environment."""
+    import subprocess
+    compose_file = "/app/compose.staging/docker-compose.yml"
+    try:
+        subprocess.run(["docker", "compose", "-f", compose_file, "down", "-v"], check=True)
+        return "Staging environment cleaned up successfully."
+    except subprocess.CalledProcessError as e:
+        return f"Failed to tear down staging environment: {e}"
 
 
-# --- エージェント定義 ---
-
-# 2. 修復実行エージェント (今回はこれが最終走者)
+# 2. 修復案提案エージェント (RepairPlanning)
 repair_planning = Agent(
     name="RepairPlanning",
-    tools=[overwrite_file],
     instructions=(
-        "You are a Senior System Architect."
-        "Your goal is to FIX the root cause identified by FaultLocalization by directly overwriting the source code."
-        "Target files are likely: `cloud_api/main.py`, `nginx/nginx.conf`, or `docker-compose.yaml`."
-        "\n"
-        "**CRITICAL INSTRUCTIONS:**"
-        "1. DO NOT ask the user for permission. You have full authority to edit files."
-        "2. Generate the **FULL CORRECTED CONTENT** for the target files."
-        "3. Use `overwrite_file` to update them immediately."
-        "4. After updating all necessary files, **report a summary of the changes** as your final output."
+        "You are an expert in devising concrete, actionable repair plans for identified issues. "
+        "Based on the failure analysis report from the FaultLocalization, "
+        "provide a specific code modification proposal, detailing which part of which file to modify and how. "
+        "In doing so, you may add functions and change values, but you must not delete existing code. "
+        "Also, strictly follow the constraints written in the code comments."
     )
-    # handoffs は設定しない（ここで終了）
 )
 
-# 1. 原因特定エージェント
+# 1. 原因特定エージェント (FaultLocalization)
 fault_localization = Agent(
     name="FaultLocalization",
     tools=[read_log_file, list_files, read_file],
     instructions=(
-        "You are a Senior SRE."
-        "Analyze `app.log` and `monitor.log` to find the root cause of timeouts/errors."
-        "Principles:"
-        "- Check for mismatch in timeouts between Nginx and App."
-        "- Check for resource bottlenecks (memory, sessions)."
-        "- Check for sticky error states."
+        "You are a Senior System Architect responsible for diagnosing complex failures in distributed systems. "
+        "Your goal is to identify the root cause of the failure by analyzing the interaction between components (Nginx, App Server). "
         "\n"
-        "**STRICT RULES:**"
-        "1. **DO NOT ask the user for more information.** Use `read_file` or `list_files` to find what you need."
-        "2. **DO NOT report findings yet.**"
-        "3. Once you identify the root cause, **IMMEDIATELY** hand off to `RepairPlanning` agent."
+        "**Investigation Principles:**\n"
+        "1. **Holistic View:** Do not view errors in isolation. Analyze how a request flows through the entire system (Proxy -> App) and identify where the bottleneck occurs.\n"
+        "2. **Configuration Consistency:** Verify if the operational parameters (timeouts, limits, buffers) are consistent across different layers. "
+        "3. **State Analysis:** Investigate how the system manages state (e.g., sessions, connections) under error conditions. "
+        "\n"
+        "Analyze the provided logs and source code based on these principles. "
+        "Identify the logic or configuration that causes the instability and hand off the results to the RepairPlanningAgent."
     ),
     handoffs=[repair_planning]
 )
@@ -126,27 +182,18 @@ async def main():
         "修復プランを作成してください。"
     )
 
-    # 複雑な分析・修正に耐えられるようターン数を確保
-    runner = Runner.run_streamed(fault_localization, input=initial_prompt, max_turns=30)
-    
-    current_agent = fault_localization.name
-    print(f"\n[{current_agent}] Starting...")
-
-    async for event in runner.stream_events():
+    streaming = Runner.run_streamed(fault_localization, input=initial_prompt)
+    async for event in streaming.stream_events():
+        # 1. エージェントが切り替わった場合
         if event.type == "agent_updated_stream_event":
             current_agent = event.new_agent.name
-            print(f"\n\n[{current_agent}] Handing over...")
+            print(f"\n\n[{current_agent}]")
+
+        # 2. テキスト生成（中間出力）の場合
         elif event.type == "raw_response_event":
             if isinstance(event.data, ResponseTextDeltaEvent):
                 print(event.data.delta, end="", flush=True)
 
-    print("\n\n[Final Output]")
-    print(runner.final_output)
 
 if __name__ == "__main__":
-    try:
-        import nest_asyncio
-        nest_asyncio.apply()
-    except ImportError:
-        pass
     asyncio.run(main())

@@ -44,6 +44,7 @@ pip-log.txt
 Pipfile.lock
 poetry.lock
 venv/
+tm-env/
 .env/
 
 # coverage / testing
@@ -62,3 +63,7 @@ test-results.xml
 migrations/__pycache__/
 
 /logs
+
+# 生成される画像・動画ファイル
+*.png
+*.mp4
