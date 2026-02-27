@@ -87,8 +87,8 @@ You will typically use up to **four terminals**:
 
 - **Terminal 1 (cmd)**: Start / stop the connected car system  
 - **Terminal 2 (cmd)**: Collect application logs into `app.log`  
-- **Terminal 3 (cmd)**: Fetch metrics via `curl` or run the timeout monitor application  
-- **Terminal 4 (PowerShell on Windows)**: Collect container resource usage into `monitor.log`  
+- **Terminal 3 (PowerShell on Windows)**: Collect container resource usage into `monitor.log`
+- **Terminal 4 (cmd)**: Fetch metrics via `curl` or run the timeout monitor application  
 
 On Windows, note that **Terminal 4 must be PowerShell**, not Command Prompt, for the `monitor.log` script.
 ---
@@ -155,13 +155,13 @@ Once enough error logs have been collected, stop in the following order:
 `monitor.log` records resource usage (CPU percentage, memory usage, etc.) for each container every second.  
 It is created by processing the output of `docker stats` and writing it to `./logs/monitor.log`.
 
-Here we use **Terminal 4** and create `monitor.log` depending on your environment.
+Here we use **Terminal 3** and create `monitor.log` depending on your environment.
 
 On Windows, you **must** use **PowerShell** (not Command Prompt) to run the script for `monitor.log`.
 
 ### Bash (Linux / macOS / WSL)
 
-In Terminal 4 (bash), move to the repository root and run:
+In Terminal 3 (bash), move to the repository root and run:
 
 ```bash
 cd /path/to/RA_Demo1
@@ -231,7 +231,7 @@ When processing finishes, the following results are printed to the terminal:
 
 ## 4. [Evaluation] Retrieve Application Server Metrics via API
 
-If you want to check the internal metrics of `app_server/main.py`, use another terminal (**Terminal 3**) while the containers are running (Terminal 1).
+If you want to check the internal metrics of `app_server/main.py`, use another terminal (**Terminal 4**) while the containers are running (Terminal 1).
 
 Example (Windows PowerShell / CMD):
 
@@ -244,7 +244,7 @@ curl -s http://localhost:8080/metrics
 - timestamp  
 - number of pending requests  
 - total processed requests  
-- total incoming requests  
+- total arrived requests  
 - total timeouts  
 
 ```json
@@ -272,7 +272,7 @@ curl -s http://localhost:8080/metrics
 }
 ```
 
-Note: For this command, the working directory of Terminal 3 does **not** matter; it can be executed from anywhere.
+Note: For this command, the working directory of Terminal 4 does **not** matter; it can be executed from anywhere.
 
 ---
 
@@ -343,7 +343,7 @@ deactivate
 
 ### 5.2 Snapshot Monitor (Static PNG)
 
-Use **Terminal 3** for this, and make sure the virtual environment is active.
+Use **Terminal 4** for this, and make sure the virtual environment is active.
 
 1. Ensure the connected car system is running (containers started in Terminal 1).  
 2. Run:
@@ -359,7 +359,7 @@ Use **Terminal 3** for this, and make sure the virtual environment is active.
 
 ### 5.3 Recorder Monitor (MP4 Video)
 
-Again, use Terminal 3 and ensure `tm-env` is active.
+Again, use Terminal 4 and ensure `tm-env` is active.
 
 1. Ensure the connected car system is running (containers started in Terminal 1).  
 2. Run:
